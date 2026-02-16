@@ -75,6 +75,7 @@ const TTSEngine = {
     const signal = this.abortController?.signal;
     
     try {
+      console.log(`[Preload] Starting preload for chunk ${nextIdx}`);
       const res = await fetch('/api/tts/generate', {
         method: 'POST',
         credentials: 'include',
@@ -83,25 +84,42 @@ const TTSEngine = {
         signal,
       });
       
-      if (session !== this.playbackSession) return;
-      if (!res.ok) return;
+      if (session !== this.playbackSession) {
+        console.log(`[Preload] Session changed, aborting preload for chunk ${nextIdx}`);
+        return;
+      }
+      if (!res.ok) {
+        console.error(`[Preload] Failed to generate audio for chunk ${nextIdx}:`, res.status);
+        return;
+      }
       
       const blob = await res.blob();
-      if (session !== this.playbackSession) return;
+      if (session !== this.playbackSession) {
+        console.log(`[Preload] Session changed after blob, aborting preload for chunk ${nextIdx}`);
+        return;
+      }
       
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.preload = 'auto';
       audio.setAttribute('playsinline', 'true');
       
-      // Preîncarcă audio-ul
+      // Preîncarcă audio-ul - important pentru iOS
       audio.load();
+      
+      // Așteaptă să fie ready
+      audio.addEventListener('canplaythrough', () => {
+        if (session === this.playbackSession) {
+          console.log(`[Preload] Chunk ${nextIdx} ready to play`);
+        }
+      }, { once: true });
       
       this.nextAudioPreload = { audio, url, index: nextIdx };
       this.audioQueue.push({ audio, url, index: nextIdx });
+      console.log(`[Preload] Chunk ${nextIdx} preloaded successfully`);
     } catch (err) {
       if (err.name !== 'AbortError') {
-        console.error('Preload error:', err);
+        console.error(`[Preload] Error preloading chunk ${nextIdx}:`, err);
       }
     }
   },
@@ -110,7 +128,11 @@ const TTSEngine = {
     if (index < 0 || index >= this.chunks.length) return;
     this.currentChunkIndex = index;
     const session = this.playbackSession;
-    if (session !== this.playbackSession) return;
+    if (session !== this.playbackSession) {
+      console.log(`[TTS] Session changed, aborting chunk ${index}`);
+      return;
+    }
+    console.log(`[TTS] Starting chunk ${index}`);
     this.emit('chunk', index);
     
     // Verifică dacă avem deja chunk-ul preîncărcat în queue
@@ -119,6 +141,7 @@ const TTSEngine = {
     
     if (queued) {
       // Folosește chunk-ul preîncărcat
+      console.log(`[TTS] Using preloaded chunk ${index}`);
       audio = queued.audio;
       url = queued.url;
       this.audioQueue = this.audioQueue.filter(q => q.index !== index);
@@ -127,6 +150,7 @@ const TTSEngine = {
       }
     } else {
       // Încarcă chunk-ul nou
+      console.log(`[TTS] Loading new chunk ${index}`);
       const text = this.chunks[index];
       const signal = this.abortController?.signal;
       try {
@@ -137,15 +161,24 @@ const TTSEngine = {
           body: JSON.stringify({ text, engine: this.provider, voice: this.apiVoice }),
           signal,
         });
-        if (session !== this.playbackSession) return;
+        if (session !== this.playbackSession) {
+          console.log(`[TTS] Session changed during fetch, aborting chunk ${index}`);
+          return;
+        }
         if (!res.ok) throw new Error('TTS failed');
         const blob = await res.blob();
-        if (session !== this.playbackSession) return;
+        if (session !== this.playbackSession) {
+          console.log(`[TTS] Session changed after blob, aborting chunk ${index}`);
+          return;
+        }
         url = URL.createObjectURL(blob);
         audio = new Audio(url);
       } catch (err) {
-        if (err.name === 'AbortError') return;
-        console.error(err);
+        if (err.name === 'AbortError') {
+          console.log(`[TTS] Request aborted for chunk ${index}`);
+          return;
+        }
+        console.error(`[TTS] Error loading chunk ${index}:`, err);
         if (session === this.playbackSession) {
           this.isPlaying = false;
           if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
@@ -165,6 +198,7 @@ const TTSEngine = {
     
     // Preîncarcă următorul chunk când acesta începe să se redă
     audio.onplay = () => {
+      console.log(`[TTS] Chunk ${index} started playing`);
       if (session === this.playbackSession && navigator.mediaSession) {
         navigator.mediaSession.playbackState = 'playing';
       }
@@ -177,17 +211,23 @@ const TTSEngine = {
       if (session !== this.playbackSession) return;
       // Când mai sunt ~2 secunde, preîncarcă următorul chunk dacă nu e deja preîncărcat
       if (audio.duration && audio.duration - audio.currentTime < 2 && !this.nextAudioPreload) {
+        console.log(`[TTS] Chunk ${index} near end, preloading next`);
         this.preloadNextChunk(index);
       }
     };
     
     audio.onended = () => {
+      console.log(`[TTS] Chunk ${index} ended`);
       this.activeAudios.delete(audio);
       this.currentAudio = null;
       if (url && !queued) URL.revokeObjectURL(url);
       
-      if (session !== this.playbackSession) return;
+      if (session !== this.playbackSession) {
+        console.log(`[TTS] Session changed, ignoring ended event for chunk ${index}`);
+        return;
+      }
       if (!this.isPlaying) {
+        console.log(`[TTS] Not playing, stopping at chunk ${index}`);
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
         return;
       }
@@ -199,22 +239,26 @@ const TTSEngine = {
         
         // Folosește chunk-ul preîncărcat dacă există
         if (this.nextAudioPreload && this.nextAudioPreload.index === nextIdx) {
+          console.log(`[TTS] Using preloaded chunk ${nextIdx}`);
           const preloaded = this.nextAudioPreload;
           this.nextAudioPreload = null;
           this.audioQueue = this.audioQueue.filter(q => q.index !== nextIdx);
           // Continuă direct cu chunk-ul preîncărcat
-          this.speakChunkApi(nextIdx);
+          setTimeout(() => this.speakChunkApi(nextIdx), 0);
         } else {
-          this.speakChunk(nextIdx);
+          console.log(`[TTS] Loading chunk ${nextIdx} on demand`);
+          setTimeout(() => this.speakChunk(nextIdx), 0);
         }
       } else {
+        console.log(`[TTS] All chunks finished`);
         this.isPlaying = false;
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
         this.emit('end');
       }
     };
     
-    audio.onerror = () => {
+    audio.onerror = (err) => {
+      console.error(`[TTS] Error playing chunk ${index}:`, err);
       this.activeAudios.delete(audio);
       this.currentAudio = null;
       if (url && !queued) URL.revokeObjectURL(url);
@@ -226,12 +270,14 @@ const TTSEngine = {
     
     // Pornește playback-ul
     try {
+      console.log(`[TTS] Attempting to play chunk ${index}`);
       await audio.play();
+      console.log(`[TTS] Chunk ${index} playing successfully`);
       if (session === this.playbackSession && navigator.mediaSession) {
         navigator.mediaSession.playbackState = 'playing';
       }
     } catch (err) {
-      console.error('Audio play error:', err);
+      console.error(`[TTS] Audio play error for chunk ${index}:`, err);
       if (session === this.playbackSession) {
         this.isPlaying = false;
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
