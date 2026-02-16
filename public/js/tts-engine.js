@@ -16,6 +16,8 @@ const TTSEngine = {
   activeAudios: new Set(),
   abortController: null,
   useFullDocumentAudio: false, // Pentru iOS - folosește un singur audio pentru întreg documentul (dezactivat pentru compatibilitate)
+  nextAudioPreload: null, // Preîncărcare următorul chunk pentru iOS
+  audioQueue: [], // Queue pentru chunks preîncărcate
 
   init() {
     this.synth = window.speechSynthesis;
@@ -347,6 +349,23 @@ const TTSEngine = {
     this.activeAudios.forEach((a) => { try { a.pause(); a.currentTime = 0; } catch (_) {} });
     this.activeAudios.clear();
     this.currentAudio = null;
+    
+    // Curăță queue-ul de chunks preîncărcate
+    this.audioQueue.forEach(({ audio, url }) => {
+      try {
+        audio.pause();
+        URL.revokeObjectURL(url);
+      } catch (_) {}
+    });
+    this.audioQueue = [];
+    if (this.nextAudioPreload) {
+      try {
+        this.nextAudioPreload.audio.pause();
+        URL.revokeObjectURL(this.nextAudioPreload.url);
+      } catch (_) {}
+      this.nextAudioPreload = null;
+    }
+    
     if (this.fullDocumentAudio) {
       try {
         this.fullDocumentAudio.pause();
