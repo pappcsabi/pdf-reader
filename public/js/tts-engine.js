@@ -18,6 +18,7 @@ const TTSEngine = {
   useFullDocumentAudio: false, // Pentru iOS - folosește un singur audio pentru întreg documentul (dezactivat pentru compatibilitate)
   nextAudioPreload: null, // Preîncărcare următorul chunk pentru iOS
   audioQueue: [], // Queue pentru chunks preîncărcate
+  singleAudioEl: null, // Un singur element Audio pentru mobil (reduce memorie, mai stabil pe iOS)
 
   init() {
     this.synth = window.speechSynthesis;
@@ -68,14 +69,8 @@ const TTSEngine = {
 
   async preloadNextChunk(index) {
     const nextIdx = index + 1;
-    if (nextIdx >= this.chunks.length) {
-      console.log(`[Preload] No more chunks after ${index}`);
-      return;
-    }
-    if (this.nextAudioPreload) {
-      console.log(`[Preload] Already preloading chunk ${this.nextAudioPreload.index}, skipping ${nextIdx}`);
-      return;
-    }
+    if (nextIdx >= this.chunks.length) return;
+    if (this.nextAudioPreload) return;
     
     const session = this.playbackSession;
     const text = this.chunks[nextIdx];
@@ -85,7 +80,6 @@ const TTSEngine = {
     this.nextAudioPreload = { audio: null, url: null, index: nextIdx, loading: true };
     
     try {
-      console.log(`[Preload] Starting preload for chunk ${nextIdx}`);
       const res = await fetch('/api/tts/generate', {
         method: 'POST',
         credentials: 'include',
@@ -95,76 +89,62 @@ const TTSEngine = {
       });
       
       if (session !== this.playbackSession) {
-        console.log(`[Preload] Session changed, aborting preload for chunk ${nextIdx}`);
         this.nextAudioPreload = null;
         return;
       }
       if (!res.ok) {
-        console.error(`[Preload] Failed to generate audio for chunk ${nextIdx}:`, res.status);
         this.nextAudioPreload = null;
         return;
       }
       
       const blob = await res.blob();
       if (session !== this.playbackSession) {
-        console.log(`[Preload] Session changed after blob, aborting preload for chunk ${nextIdx}`);
         this.nextAudioPreload = null;
         return;
       }
       
       const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.preload = 'auto';
-      audio.setAttribute('playsinline', 'true');
       
-      // Preîncarcă audio-ul - important pentru iOS
-      audio.load();
-      
-      // Așteaptă să fie ready
-      audio.addEventListener('canplaythrough', () => {
-        if (session === this.playbackSession) {
-          console.log(`[Preload] Chunk ${nextIdx} ready to play`);
-        }
-      }, { once: true });
-      
-      this.nextAudioPreload = { audio, url, index: nextIdx, loading: false };
-      this.audioQueue.push({ audio, url, index: nextIdx });
-      console.log(`[Preload] Chunk ${nextIdx} preloaded successfully`);
+      // Pe mobil: stocăm doar URL (fără Audio element) - economisește memorie, mai stabil pe iOS
+      this.nextAudioPreload = { url, index: nextIdx, loading: false };
+      this.audioQueue.push({ url, index: nextIdx });
     } catch (err) {
-      if (err.name !== 'AbortError') {
-        console.error(`[Preload] Error preloading chunk ${nextIdx}:`, err);
-      }
+      if (err.name !== 'AbortError') console.error('[Preload] Error:', err);
       this.nextAudioPreload = null;
     }
+  },
+
+  isMobile() {
+    return 'ontouchstart' in window || /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  },
+
+  getOrCreateSingleAudio() {
+    if (!this.singleAudioEl) {
+      this.singleAudioEl = new Audio();
+      this.singleAudioEl.setAttribute('playsinline', 'true');
+      this.singleAudioEl.preload = 'auto';
+      this.singleAudioEl.setAttribute('webkit-playsinline', 'true'); // iOS legacy
+    }
+    return this.singleAudioEl;
   },
 
   async speakChunkApi(index) {
     if (index < 0 || index >= this.chunks.length) return;
     this.currentChunkIndex = index;
     const session = this.playbackSession;
-    if (session !== this.playbackSession) {
-      console.log(`[TTS] Session changed, aborting chunk ${index}`);
-      return;
-    }
-    console.log(`[TTS] Starting chunk ${index}`);
+    if (session !== this.playbackSession) return;
     this.emit('chunk', index);
     
-    // Verifică dacă avem deja chunk-ul preîncărcat în queue
-    let audio, url;
+    let url;
     const queued = this.audioQueue.find(q => q.index === index);
     
     if (queued) {
-      // Folosește chunk-ul preîncărcat
-      console.log(`[TTS] Using preloaded chunk ${index}`);
-      audio = queued.audio;
       url = queued.url;
       this.audioQueue = this.audioQueue.filter(q => q.index !== index);
       if (this.nextAudioPreload && this.nextAudioPreload.index === index) {
         this.nextAudioPreload = null;
       }
     } else {
-      // Încarcă chunk-ul nou
-      console.log(`[TTS] Loading new chunk ${index}`);
       const text = this.chunks[index];
       const signal = this.abortController?.signal;
       try {
@@ -175,24 +155,14 @@ const TTSEngine = {
           body: JSON.stringify({ text, engine: this.provider, voice: this.apiVoice }),
           signal,
         });
-        if (session !== this.playbackSession) {
-          console.log(`[TTS] Session changed during fetch, aborting chunk ${index}`);
-          return;
-        }
+        if (session !== this.playbackSession) return;
         if (!res.ok) throw new Error('TTS failed');
         const blob = await res.blob();
-        if (session !== this.playbackSession) {
-          console.log(`[TTS] Session changed after blob, aborting chunk ${index}`);
-          return;
-        }
+        if (session !== this.playbackSession) return;
         url = URL.createObjectURL(blob);
-        audio = new Audio(url);
       } catch (err) {
-        if (err.name === 'AbortError') {
-          console.log(`[TTS] Request aborted for chunk ${index}`);
-          return;
-        }
-        console.error(`[TTS] Error loading chunk ${index}:`, err);
+        if (err.name === 'AbortError') return;
+        console.error('[TTS] Error loading chunk:', err);
         if (session === this.playbackSession) {
           this.isPlaying = false;
           if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
@@ -201,119 +171,96 @@ const TTSEngine = {
         return;
       }
     }
+
+    const useSingleEl = this.isMobile();
+    const audio = useSingleEl ? this.getOrCreateSingleAudio() : new Audio(url);
     
-    this.currentAudio = audio;
-    this.activeAudios.add(audio);
+    if (!useSingleEl) {
+      audio.setAttribute('playsinline', 'true');
+      audio.setAttribute('preload', 'auto');
+      this.currentAudio = audio;
+      this.activeAudios.add(audio);
+    } else {
+      this.currentAudio = audio;
+    }
+
     audio.playbackRate = this.rate;
-    
-    // Pentru iOS - marcarea ca media activă pentru Media Session
-    audio.setAttribute('playsinline', 'true');
-    audio.setAttribute('preload', 'auto');
-    
-    // Preîncarcă următorul chunk când acesta începe să se redă
+    audio.src = url;
+
+    const playNextChunk = () => {
+      const nextIdx = index + 1;
+      if (nextIdx >= this.chunks.length) {
+        this.isPlaying = false;
+        if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
+        this.emit('end');
+        return;
+      }
+      if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
+      if (this.nextAudioPreload && this.nextAudioPreload.index === nextIdx) {
+        this.nextAudioPreload = null;
+        this.audioQueue = this.audioQueue.filter(q => q.index !== nextIdx);
+      }
+      setTimeout(() => this.speakChunkApi(nextIdx), 0);
+    };
+
     audio.onplay = () => {
-      console.log(`[TTS] Chunk ${index} started playing`);
       if (session === this.playbackSession && navigator.mediaSession) {
         navigator.mediaSession.playbackState = 'playing';
       }
-      // Preîncarcă următorul chunk imediat ce acesta începe
-      // Folosim setTimeout pentru a nu bloca execuția
       setTimeout(() => {
         if (session === this.playbackSession && this.isPlaying) {
           this.preloadNextChunk(index);
         }
-      }, 100);
+      }, 50);
     };
-    
-    // Pentru iOS - folosește timeupdate pentru a detecta apropierea de sfârșit
+
     let timeupdateFired = false;
     audio.ontimeupdate = () => {
       if (session !== this.playbackSession) return;
-      // Când mai sunt ~2 secunde, preîncarcă următorul chunk dacă nu e deja preîncărcat
-      // Folosim un flag pentru a evita multiple apeluri
       if (!timeupdateFired && audio.duration && audio.duration - audio.currentTime < 2 && !this.nextAudioPreload) {
         timeupdateFired = true;
-        console.log(`[TTS] Chunk ${index} near end (${audio.duration - audio.currentTime}s remaining), preloading next`);
         setTimeout(() => {
           if (session === this.playbackSession && this.isPlaying && !this.nextAudioPreload) {
             this.preloadNextChunk(index);
           }
-        }, 100);
+        }, 50);
       }
     };
-    
+
     audio.onended = () => {
-      console.log(`[TTS] Chunk ${index} ended`);
-      this.activeAudios.delete(audio);
-      this.currentAudio = null;
-      if (url && !queued) URL.revokeObjectURL(url);
-      
-      if (session !== this.playbackSession) {
-        console.log(`[TTS] Session changed, ignoring ended event for chunk ${index}`);
-        return;
+      if (!useSingleEl) {
+        this.activeAudios.delete(audio);
+        URL.revokeObjectURL(url);
       }
-      if (!this.isPlaying) {
-        console.log(`[TTS] Not playing, stopping at chunk ${index}`);
+      this.currentAudio = null;
+      
+      if (session !== this.playbackSession || !this.isPlaying) {
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
         return;
       }
       
-      // Continuă cu următorul chunk - folosește preîncărcat dacă există
-      const nextIdx = index + 1;
-      if (nextIdx < this.chunks.length) {
-        if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
-        
-        // Folosește chunk-ul preîncărcat dacă există
-        if (this.nextAudioPreload && this.nextAudioPreload.index === nextIdx) {
-          console.log(`[TTS] Using preloaded chunk ${nextIdx}`);
-          const preloaded = this.nextAudioPreload;
-          this.nextAudioPreload = null;
-          this.audioQueue = this.audioQueue.filter(q => q.index !== nextIdx);
-          // Continuă direct cu chunk-ul preîncărcat
-          // Folosim requestAnimationFrame pentru a asigura execuția pe iOS
-          requestAnimationFrame(() => {
-            if (this.isPlaying && session === this.playbackSession) {
-              this.speakChunkApi(nextIdx);
-            }
-          });
-        } else {
-          console.log(`[TTS] Loading chunk ${nextIdx} on demand`);
-          // Folosim requestAnimationFrame pentru a asigura execuția pe iOS
-          requestAnimationFrame(() => {
-            if (this.isPlaying && session === this.playbackSession) {
-              this.speakChunk(nextIdx);
-            }
-          });
-        }
-      } else {
-        console.log(`[TTS] All chunks finished`);
+      if (useSingleEl && url) URL.revokeObjectURL(url);
+      playNextChunk();
+    };
+
+    audio.onerror = () => {
+      if (!useSingleEl) this.activeAudios.delete(audio);
+      if (url) URL.revokeObjectURL(url);
+      this.currentAudio = null;
+      if (session === this.playbackSession) {
         this.isPlaying = false;
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
         this.emit('end');
       }
     };
-    
-    audio.onerror = (err) => {
-      console.error(`[TTS] Error playing chunk ${index}:`, err);
-      this.activeAudios.delete(audio);
-      this.currentAudio = null;
-      if (url && !queued) URL.revokeObjectURL(url);
-      if (session !== this.playbackSession) return;
-      this.isPlaying = false;
-      if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
-      this.emit('end');
-    };
-    
-    // Pornește playback-ul
+
     try {
-      console.log(`[TTS] Attempting to play chunk ${index}`);
       await audio.play();
-      console.log(`[TTS] Chunk ${index} playing successfully`);
       if (session === this.playbackSession && navigator.mediaSession) {
         navigator.mediaSession.playbackState = 'playing';
       }
     } catch (err) {
-      console.error(`[TTS] Audio play error for chunk ${index}:`, err);
+      console.error('[TTS] Play error:', err);
       if (session === this.playbackSession) {
         this.isPlaying = false;
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
@@ -514,20 +461,21 @@ const TTSEngine = {
     this.activeAudios.clear();
     this.currentAudio = null;
     
-    // Curăță queue-ul de chunks preîncărcate
-    this.audioQueue.forEach(({ audio, url }) => {
-      try {
-        audio.pause();
-        URL.revokeObjectURL(url);
-      } catch (_) {}
+    // Curăță queue-ul de chunks preîncărcate (acum stocăm doar url, nu audio)
+    this.audioQueue.forEach(({ url }) => {
+      try { URL.revokeObjectURL(url); } catch (_) {}
     });
     this.audioQueue = [];
-    if (this.nextAudioPreload) {
-      try {
-        this.nextAudioPreload.audio.pause();
-        URL.revokeObjectURL(this.nextAudioPreload.url);
-      } catch (_) {}
+    if (this.nextAudioPreload?.url) {
+      try { URL.revokeObjectURL(this.nextAudioPreload.url); } catch (_) {}
       this.nextAudioPreload = null;
+    }
+    if (this.singleAudioEl) {
+      try {
+        this.singleAudioEl.pause();
+        this.singleAudioEl.currentTime = 0;
+        this.singleAudioEl.src = '';
+      } catch (_) {}
     }
     
     if (this.fullDocumentAudio) {
@@ -614,20 +562,22 @@ const TTSEngine = {
 
   pause() {
     if (this.provider === 'web' && this.synth) this.synth.pause();
-    if (this.fullDocumentAudio) {
-      this.fullDocumentAudio.pause();
-    }
+    if (this.fullDocumentAudio) this.fullDocumentAudio.pause();
+    if (this.singleAudioEl) this.singleAudioEl.pause();
     this.activeAudios.forEach((a) => { try { a.pause(); } catch (_) {} });
     this.isPaused = true;
     this.emit('pause');
   },
 
   resume() {
-    if (this.provider === 'web' && this.synth) {
-      this.synth.resume();
-    }
+    if (this.provider === 'web' && this.synth) this.synth.resume();
     if (this.fullDocumentAudio) {
       this.fullDocumentAudio.play().then(() => {
+        if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
+      }).catch(() => {});
+    }
+    if (this.singleAudioEl) {
+      this.singleAudioEl.play().then(() => {
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
       }).catch(() => {});
     }
