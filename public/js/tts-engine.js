@@ -68,11 +68,21 @@ const TTSEngine = {
 
   async preloadNextChunk(index) {
     const nextIdx = index + 1;
-    if (nextIdx >= this.chunks.length || this.nextAudioPreload) return;
+    if (nextIdx >= this.chunks.length) {
+      console.log(`[Preload] No more chunks after ${index}`);
+      return;
+    }
+    if (this.nextAudioPreload) {
+      console.log(`[Preload] Already preloading chunk ${this.nextAudioPreload.index}, skipping ${nextIdx}`);
+      return;
+    }
     
     const session = this.playbackSession;
     const text = this.chunks[nextIdx];
     const signal = this.abortController?.signal;
+    
+    // Marchează că începem preîncărcarea
+    this.nextAudioPreload = { audio: null, url: null, index: nextIdx, loading: true };
     
     try {
       console.log(`[Preload] Starting preload for chunk ${nextIdx}`);
@@ -86,16 +96,19 @@ const TTSEngine = {
       
       if (session !== this.playbackSession) {
         console.log(`[Preload] Session changed, aborting preload for chunk ${nextIdx}`);
+        this.nextAudioPreload = null;
         return;
       }
       if (!res.ok) {
         console.error(`[Preload] Failed to generate audio for chunk ${nextIdx}:`, res.status);
+        this.nextAudioPreload = null;
         return;
       }
       
       const blob = await res.blob();
       if (session !== this.playbackSession) {
         console.log(`[Preload] Session changed after blob, aborting preload for chunk ${nextIdx}`);
+        this.nextAudioPreload = null;
         return;
       }
       
@@ -114,13 +127,14 @@ const TTSEngine = {
         }
       }, { once: true });
       
-      this.nextAudioPreload = { audio, url, index: nextIdx };
+      this.nextAudioPreload = { audio, url, index: nextIdx, loading: false };
       this.audioQueue.push({ audio, url, index: nextIdx });
       console.log(`[Preload] Chunk ${nextIdx} preloaded successfully`);
     } catch (err) {
       if (err.name !== 'AbortError') {
         console.error(`[Preload] Error preloading chunk ${nextIdx}:`, err);
       }
+      this.nextAudioPreload = null;
     }
   },
 
@@ -203,16 +217,28 @@ const TTSEngine = {
         navigator.mediaSession.playbackState = 'playing';
       }
       // Preîncarcă următorul chunk imediat ce acesta începe
-      this.preloadNextChunk(index);
+      // Folosim setTimeout pentru a nu bloca execuția
+      setTimeout(() => {
+        if (session === this.playbackSession && this.isPlaying) {
+          this.preloadNextChunk(index);
+        }
+      }, 100);
     };
     
     // Pentru iOS - folosește timeupdate pentru a detecta apropierea de sfârșit
+    let timeupdateFired = false;
     audio.ontimeupdate = () => {
       if (session !== this.playbackSession) return;
       // Când mai sunt ~2 secunde, preîncarcă următorul chunk dacă nu e deja preîncărcat
-      if (audio.duration && audio.duration - audio.currentTime < 2 && !this.nextAudioPreload) {
-        console.log(`[TTS] Chunk ${index} near end, preloading next`);
-        this.preloadNextChunk(index);
+      // Folosim un flag pentru a evita multiple apeluri
+      if (!timeupdateFired && audio.duration && audio.duration - audio.currentTime < 2 && !this.nextAudioPreload) {
+        timeupdateFired = true;
+        console.log(`[TTS] Chunk ${index} near end (${audio.duration - audio.currentTime}s remaining), preloading next`);
+        setTimeout(() => {
+          if (session === this.playbackSession && this.isPlaying && !this.nextAudioPreload) {
+            this.preloadNextChunk(index);
+          }
+        }, 100);
       }
     };
     
@@ -244,10 +270,20 @@ const TTSEngine = {
           this.nextAudioPreload = null;
           this.audioQueue = this.audioQueue.filter(q => q.index !== nextIdx);
           // Continuă direct cu chunk-ul preîncărcat
-          setTimeout(() => this.speakChunkApi(nextIdx), 0);
+          // Folosim requestAnimationFrame pentru a asigura execuția pe iOS
+          requestAnimationFrame(() => {
+            if (this.isPlaying && session === this.playbackSession) {
+              this.speakChunkApi(nextIdx);
+            }
+          });
         } else {
           console.log(`[TTS] Loading chunk ${nextIdx} on demand`);
-          setTimeout(() => this.speakChunk(nextIdx), 0);
+          // Folosim requestAnimationFrame pentru a asigura execuția pe iOS
+          requestAnimationFrame(() => {
+            if (this.isPlaying && session === this.playbackSession) {
+              this.speakChunk(nextIdx);
+            }
+          });
         }
       } else {
         console.log(`[TTS] All chunks finished`);
