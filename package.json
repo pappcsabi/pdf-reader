@@ -1,6 +1,6 @@
 {
   "name": "pdf-reader",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "PDF Reader with TTS - Node.js full-stack",
   "main": "server.js",
   "scripts": {

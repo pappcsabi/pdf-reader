@@ -15,10 +15,13 @@ Aplicație web full-stack pentru citirea documentelor (PDF, DOCX, TXT) cu text-t
 
 ## Versiuni
 
+### v1.3.0
+- Schimbarea vitezei funcționează pe toate motoarele (Edge, gTTS) inclusiv pe mobil
+- Redare continuă cu ecranul închis (fix tranziție între chunks pe iOS)
+
 ### v1.2.0
 - Redare continuă pe iPhone cu ecran deschis și blocat
 - Un singur element Audio pe mobil pentru stabilitate
-- Known issue: ajustarea vitezei pe mobil poate să nu se aplice
 
 ## Cerințe
 

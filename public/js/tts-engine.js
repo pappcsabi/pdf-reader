@@ -200,7 +200,7 @@ const TTSEngine = {
         this.nextAudioPreload = null;
         this.audioQueue = this.audioQueue.filter(q => q.index !== nextIdx);
       }
-      setTimeout(() => this.speakChunkApi(nextIdx), 0);
+      this.speakChunkApi(nextIdx);
     };
 
     audio.onplay = () => {
@@ -255,6 +255,7 @@ const TTSEngine = {
     };
 
     try {
+      audio.playbackRate = this.rate;
       await audio.play();
       if (session === this.playbackSession && navigator.mediaSession) {
         navigator.mediaSession.playbackState = 'playing';
