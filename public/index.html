@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PDF Reader - Cititor cu voce</title>
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>PDF Reader</h1>
+      <div id="user-info" class="hidden">
+        <span id="user-email"></span>
+        <button id="btn-logout">Deconectare</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- Auth section -->
+      <section id="auth-section">
+        <div id="login-form">
+          <h2>Autentificare</h2>
+          <form id="form-login">
+            <input type="email" id="login-email" placeholder="Email" required>
+            <input type="password" id="login-password" placeholder="Parolă" required>
+            <button type="submit">Conectare</button>
+          </form>
+          <p class="auth-links">
+            <a href="#" id="toggle-register">Înregistrare</a>
+            <span> | </span>
+            <a href="/api/auth/google">Conectare cu Google</a>
+            <span> | </span>
+            <a href="/api/auth/github">Conectare cu GitHub</a>
+          </p>
+          <p id="auth-error" class="error hidden"></p>
+        </div>
+
+        <div id="register-form" class="hidden">
+          <h2>Înregistrare</h2>
+          <form id="form-register">
+            <input type="email" id="register-email" placeholder="Email" required>
+            <input type="password" id="register-password" placeholder="Parolă (min 6 caractere)" required minlength="6">
+            <button type="submit">Înregistrare</button>
+          </form>
+          <p class="auth-links">
+            <a href="#" id="toggle-login">Autentificare</a>
+          </p>
+          <p id="register-error" class="error hidden"></p>
+        </div>
+      </section>
+
+      <!-- Dashboard section (when logged in) -->
+      <section id="dashboard" class="hidden">
+        <div class="upload-zone" id="upload-zone">
+          <p>Trage aici PDF, DOCX sau TXT</p>
+          <p>sau</p>
+          <input type="file" id="file-input" accept=".pdf,.docx,.txt" hidden>
+          <button type="button" id="btn-upload">Alege fișier</button>
+        </div>
+
+        <div id="documents-list">
+          <h3>Documente</h3>
+          <ul id="documents"></ul>
+        </div>
+
+        <div id="reader-panel" class="hidden">
+          <h3 id="reader-title"></h3>
+          <div class="tts-controls">
+            <label>Motor: <select id="engine-select">
+              <option value="web">Web Speech (browser)</option>
+              <option value="edge">Edge TTS (Microsoft)</option>
+              <option value="gtts">gTTS (Google, doar voce feminină)</option>
+            </select></label>
+            <label>Viteză: <input type="range" id="rate-slider" min="0.5" max="2" step="0.1" value="1"></label>
+            <span id="rate-value">1</span>
+            <label>Voce: <select id="voice-select"></select></label>
+            <span class="voice-hint" title="Edge TTS și gTTS folosesc vocile Microsoft/Google, mai naturale">i</span>
+            <div class="playback-buttons">
+              <button id="btn-back" title="Înapoi 10s">−10s</button>
+              <button id="btn-play">Play</button>
+              <button id="btn-pause" class="hidden">Pauză</button>
+              <button id="btn-stop" title="Oprește tot">Stop</button>
+              <button id="btn-forward" title="Înainte 10s">+10s</button>
+            </div>
+          </div>
+          <div id="progress-section" class="hidden">
+            <div class="progress-header">
+              <span id="progress-label">Propoziția 1 din 1</span>
+              <span id="progress-percent">0%</span>
+            </div>
+            <input type="range" id="progress-slider" min="0" max="100" value="0" step="1">
+          </div>
+          <div id="chapters-section" class="chapters-section hidden">
+            <button type="button" id="chapters-toggle">Capitole</button>
+            <nav id="chapters-nav" class="chapters-nav hidden">
+              <ul id="chapters-list"></ul>
+            </nav>
+          </div>
+          <div id="prompter" class="prompter hidden" aria-label="Text citit">
+            <div id="prompter-text"></div>
+          </div>
+          <p id="reader-hint" class="hint">Selectează un document pentru a-l citi cu voce.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p class="ios-hint hidden">Pe iOS PWA audio poate să se oprească cu ecranul blocat. Folosește Safari pentru redare continuă.</p>
+    </footer>
+  </div>
+
+  <script src="/js/auth.js"></script>
+  <script src="/js/documents.js"></script>
+  <script src="/js/chapters.js"></script>
+  <script src="/js/tts-engine.js"></script>
+  <script src="/js/media-session.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
