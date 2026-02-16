@@ -13,6 +13,13 @@ Aplicație web full-stack pentru citirea documentelor (PDF, DOCX, TXT) cu text-t
 - 🎯 **Prompter**: Highlighting text sincronizat cu audio
 - ⏯️ **Controale**: Play, Pause, Stop, Skip ±10s, navigare capitole
 
+## Versiuni
+
+### v1.2.0
+- Redare continuă pe iPhone cu ecran deschis și blocat
+- Un singur element Audio pe mobil pentru stabilitate
+- Known issue: ajustarea vitezei pe mobil poate să nu se aplice
+
 ## Cerințe
 
 - Node.js 18+
