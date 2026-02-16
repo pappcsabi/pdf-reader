@@ -66,14 +66,14 @@ const TTSEngine = {
     this.synth.speak(u);
   },
 
-  async speakChunkApi(index) {
-    if (index < 0 || index >= this.chunks.length) return;
-    this.currentChunkIndex = index;
+  async preloadNextChunk(index) {
+    const nextIdx = index + 1;
+    if (nextIdx >= this.chunks.length || this.nextAudioPreload) return;
+    
     const session = this.playbackSession;
-    if (session !== this.playbackSession) return;
-    this.emit('chunk', index);
-    const text = this.chunks[index];
+    const text = this.chunks[nextIdx];
     const signal = this.abortController?.signal;
+    
     try {
       const res = await fetch('/api/tts/generate', {
         method: 'POST',
@@ -82,74 +82,156 @@ const TTSEngine = {
         body: JSON.stringify({ text, engine: this.provider, voice: this.apiVoice }),
         signal,
       });
+      
       if (session !== this.playbackSession) return;
-      if (!res.ok) throw new Error('TTS failed');
+      if (!res.ok) return;
+      
       const blob = await res.blob();
       if (session !== this.playbackSession) return;
+      
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
-      this.currentAudio = audio;
-      this.activeAudios.add(audio);
-      audio.playbackRate = this.rate;
-      
-      // Pentru iOS - marcarea ca media activă pentru Media Session
+      audio.preload = 'auto';
       audio.setAttribute('playsinline', 'true');
-      audio.setAttribute('preload', 'auto');
       
-      audio.onplay = () => {
-        if (session === this.playbackSession && navigator.mediaSession) {
-          navigator.mediaSession.playbackState = 'playing';
-        }
-      };
+      // Preîncarcă audio-ul
+      audio.load();
       
-      audio.onended = () => {
-        this.activeAudios.delete(audio);
-        this.currentAudio = null;
-        URL.revokeObjectURL(url);
+      this.nextAudioPreload = { audio, url, index: nextIdx };
+      this.audioQueue.push({ audio, url, index: nextIdx });
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        console.error('Preload error:', err);
+      }
+    }
+  },
+
+  async speakChunkApi(index) {
+    if (index < 0 || index >= this.chunks.length) return;
+    this.currentChunkIndex = index;
+    const session = this.playbackSession;
+    if (session !== this.playbackSession) return;
+    this.emit('chunk', index);
+    
+    // Verifică dacă avem deja chunk-ul preîncărcat în queue
+    let audio, url;
+    const queued = this.audioQueue.find(q => q.index === index);
+    
+    if (queued) {
+      // Folosește chunk-ul preîncărcat
+      audio = queued.audio;
+      url = queued.url;
+      this.audioQueue = this.audioQueue.filter(q => q.index !== index);
+      if (this.nextAudioPreload && this.nextAudioPreload.index === index) {
+        this.nextAudioPreload = null;
+      }
+    } else {
+      // Încarcă chunk-ul nou
+      const text = this.chunks[index];
+      const signal = this.abortController?.signal;
+      try {
+        const res = await fetch('/api/tts/generate', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, engine: this.provider, voice: this.apiVoice }),
+          signal,
+        });
         if (session !== this.playbackSession) return;
-        if (!this.isPlaying) {
-          if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
-          return;
-        }
-        // Continuă cu următorul chunk imediat, fără pauză
-        const nextIdx = index + 1;
-        if (nextIdx < this.chunks.length) {
-          // Păstrează starea "playing" pentru Media Session între chunks
-          if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
-          this.speakChunk(nextIdx);
-        } else {
-          this.isPlaying = false;
-          if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
-          this.emit('end');
-        }
-      };
-      audio.onerror = () => {
-        this.activeAudios.delete(audio);
-        this.currentAudio = null;
-        URL.revokeObjectURL(url);
+        if (!res.ok) throw new Error('TTS failed');
+        const blob = await res.blob();
         if (session !== this.playbackSession) return;
-        this.isPlaying = false;
-        if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
-        this.emit('end');
-      };
-      
-      // Pornește playback-ul și așteaptă să înceapă efectiv
-      await audio.play().catch(err => {
-        console.error('Audio play error:', err);
+        url = URL.createObjectURL(blob);
+        audio = new Audio(url);
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+        console.error(err);
         if (session === this.playbackSession) {
           this.isPlaying = false;
           if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
           this.emit('end');
         }
-      });
+        return;
+      }
+    }
+    
+    this.currentAudio = audio;
+    this.activeAudios.add(audio);
+    audio.playbackRate = this.rate;
+    
+    // Pentru iOS - marcarea ca media activă pentru Media Session
+    audio.setAttribute('playsinline', 'true');
+    audio.setAttribute('preload', 'auto');
+    
+    // Preîncarcă următorul chunk când acesta începe să se redă
+    audio.onplay = () => {
+      if (session === this.playbackSession && navigator.mediaSession) {
+        navigator.mediaSession.playbackState = 'playing';
+      }
+      // Preîncarcă următorul chunk imediat ce acesta începe
+      this.preloadNextChunk(index);
+    };
+    
+    // Pentru iOS - folosește timeupdate pentru a detecta apropierea de sfârșit
+    audio.ontimeupdate = () => {
+      if (session !== this.playbackSession) return;
+      // Când mai sunt ~2 secunde, preîncarcă următorul chunk dacă nu e deja preîncărcat
+      if (audio.duration && audio.duration - audio.currentTime < 2 && !this.nextAudioPreload) {
+        this.preloadNextChunk(index);
+      }
+    };
+    
+    audio.onended = () => {
+      this.activeAudios.delete(audio);
+      this.currentAudio = null;
+      if (url && !queued) URL.revokeObjectURL(url);
       
-      // Asigură-te că Media Session știe că este în playing
+      if (session !== this.playbackSession) return;
+      if (!this.isPlaying) {
+        if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
+        return;
+      }
+      
+      // Continuă cu următorul chunk - folosește preîncărcat dacă există
+      const nextIdx = index + 1;
+      if (nextIdx < this.chunks.length) {
+        if (navigator.mediaSession) navigator.mediaSession.playbackState = 'playing';
+        
+        // Folosește chunk-ul preîncărcat dacă există
+        if (this.nextAudioPreload && this.nextAudioPreload.index === nextIdx) {
+          const preloaded = this.nextAudioPreload;
+          this.nextAudioPreload = null;
+          this.audioQueue = this.audioQueue.filter(q => q.index !== nextIdx);
+          // Continuă direct cu chunk-ul preîncărcat
+          this.speakChunkApi(nextIdx);
+        } else {
+          this.speakChunk(nextIdx);
+        }
+      } else {
+        this.isPlaying = false;
+        if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
+        this.emit('end');
+      }
+    };
+    
+    audio.onerror = () => {
+      this.activeAudios.delete(audio);
+      this.currentAudio = null;
+      if (url && !queued) URL.revokeObjectURL(url);
+      if (session !== this.playbackSession) return;
+      this.isPlaying = false;
+      if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
+      this.emit('end');
+    };
+    
+    // Pornește playback-ul
+    try {
+      await audio.play();
       if (session === this.playbackSession && navigator.mediaSession) {
         navigator.mediaSession.playbackState = 'playing';
       }
     } catch (err) {
-      if (err.name === 'AbortError') return;
-      console.error(err);
+      console.error('Audio play error:', err);
       if (session === this.playbackSession) {
         this.isPlaying = false;
         if (navigator.mediaSession) navigator.mediaSession.playbackState = 'none';
